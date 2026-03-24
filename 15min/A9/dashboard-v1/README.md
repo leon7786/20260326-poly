@@ -1,99 +1,96 @@
 # A9 / dashboard-v1
 
-This folder contains A9's current dashboard website package for the 15-minute Polymarket crypto paper-trading system.
+这个文件夹存放 A9 当前版本的看板网站打包内容，对应 15 分钟 Polymarket crypto paper-trading 系统的前台控制台。
 
-## Folder ownership
+## 文件夹归属
 
-- `15min/A9/` is A9's workspace inside this repo.
-- `15min/A9/dashboard-v1/` stores the current dashboard implementation snapshot.
+- `15min/A9/` 是 A9 在这个仓库里的工作目录
+- `15min/A9/dashboard-v1/` 存放当前看板实现快照
 
-## Files
+## 文件说明
 
 - `polymarket_dashboard_5011.js`
-  - current Node.js dashboard server used for the bot cockpit
+  - 当前正在使用的 Node.js 看板服务脚本
 - `README.md`
-  - this overview document
+  - 当前看板、WSS 接法、交易逻辑的中文说明
 
-## What this dashboard is
+## 这个看板是什么
 
-This is not a generic market dashboard.
-It is an operator-facing **bot cockpit** for a 15-minute crypto Polymarket trading system.
+这不是一个普通行情页，而是一个面向操作者的 **bot cockpit / 交易控制台**。
 
-The site is designed to answer these questions quickly:
+它主要回答这几个问题：
 
-1. Is the bot online?
-2. What live Polymarket contracts is it tracking right now?
-3. What recent trades and activity happened?
-4. Why did the strategy pass or refuse a setup?
-5. What is the nearest setup to the next trade?
+1. bot 现在是否在线？
+2. 当前在盯哪些 live Polymarket 合约？
+3. 最近发生了哪些成交和运行事件？
+4. 为什么策略成交，或者为什么拒绝成交？
+5. 当前最接近下一笔交易的是哪一个 setup？
 
-## Current UI layout
+## 当前页面结构
 
-The current dashboard structure includes these major sections:
+### 1）顶部 KPI 区
 
-### 1. Top KPI strip
-
-Shows at-a-glance status such as:
+用于快速看核心状态，例如：
 
 - Bot ONLINE / OFFLINE
-- Current mode
+- 当前 mode
 - Paper NAV
 - Realized PnL
 - Last Fill
 
-### 2. Trade Blotter
+### 2）Trade Blotter
 
-Displays real paper trading fills only.
+只展示真实的 paper `open / close` 成交。
 
-Typical items shown:
+当前表格会展示类似信息：
 
-- trade time
+- 交易时间
 - symbol
 - market / contract
 - side
 - stake
 - shares / price
 - balance
-- realized PnL
+- realized pnl
 
-### 3. Activity feed
+### 3）Activity feed
 
-Shows non-fill runtime events, for example:
+展示非成交型运行事件，例如：
 
-- status reports
-- execution attempts
+- status report
+- execution attempt
 - decision activity
-- early-exit style signals
+- early-exit 风格信号
 
-This makes the dashboard useful even when there are few fills.
+这样即使成交不多，也能看到 bot 最近到底在做什么。
 
-### 4. Matched markets
+### 4）Matched markets
 
-Shows the live Polymarket contracts currently being watched.
+展示当前 scanner 实际命中的 live Polymarket 合约。
 
-Fields include:
+常见字段包括：
 
 - symbol
-- contract question
+- 合约 question
 - end time
 - liquidity
 - 24h volume
 
-### 5. No-trade decisions
+### 5）No-trade decisions
 
-Shows why the bot did **not** trade.
+展示为什么 bot **没有交易**。
 
-Typical fields:
+主要字段包括：
 
 - direction
 - estimated win probability
 - round quality
-- age since last flip
+- 距离上次 flip 的时间
 - blockers
 
-### 6. 7-symbol round board
+### 6）7-symbol round board
 
-Tracks the 7 configured symbols:
+追踪当前这 7 个币种：
 
 - BTC
 - ETH
@@ -103,7 +100,7 @@ Tracks the 7 configured symbols:
 - HYPE
 - BNB
 
-Displayed round data includes:
+展示内容包括：
 
 - open price
 - move bps
@@ -113,34 +110,34 @@ Displayed round data includes:
 - momentum 5 / 15 / 60
 - source spread
 - source count
-- decision state
+- 当前 decision 状态
 
-### 7. First trade watch
+### 7）First trade watch
 
-Highlights the nearest candidate to becoming eligible.
+用来高亮当前**最接近成交**的 setup。
 
-This section is meant to show:
+这一块的目标是直接告诉操作者：
 
-- current strongest setup
-- estimated probability
-- ask / lag / flips / quality
-- which blockers still remain
+- 当前最强 setup 是谁
+- 估算胜率是多少
+- ask / lag / flips / quality 现在怎样
+- 还差哪些 blocker 才会真正开仓
 
-## Time zone
+## 时区设置
 
-The UI is normalized to:
+页面时间统一按：
 
 - `GMT+8 / Asia/Shanghai`
 
-Trade time and status timestamps are displayed in that time zone for operator clarity.
+交易时间和状态时间都按这个时区显示，避免 UTC 和本地时间混淆。
 
-## How the dashboard gets data
+## 看板的数据来源
 
-The dashboard uses two main data paths.
+看板目前主要依赖两类数据。
 
-### A. Runtime files written by the bot
+## A. bot 写到磁盘的 runtime 文件
 
-Primary files currently used:
+当前主要使用这些文件：
 
 - `polymarket_crypto_paperbot_multi_live_status.json`
 - `polymarket_crypto_paperbot_multi_live_summary.json`
@@ -149,75 +146,77 @@ Primary files currently used:
 - `polymarket_crypto_paperbot_multi_live_rounds.jsonl`
 - `polymarket_crypto_paperbot_multi_live_flips.jsonl`
 
-These files drive:
+这些文件负责驱动：
 
-- bot online/offline state
-- live status snapshot
-- paper NAV and realized pnl
+- bot 在线/离线状态
+- live status 快照
+- paper NAV 和 realized pnl
 - trade blotter
-- blockers / decisions
-- rounds and flips
+- decisions / blockers
+- rounds / flips 数据
 
-### B. Live WSS data for market/watchlist display
+## B. 用于市场展示的实时 WSS 数据
 
-The dashboard also opens real-time market feeds.
+看板本身还会打开实时市场 websocket，用于 watchlist 和市场侧信息展示。
 
-#### Polymarket
+### Polymarket
 
-CLOB market websocket:
+CLOB 市场 websocket：
 
 - `wss://ws-subscriptions-clob.polymarket.com/ws/market`
 
-Used for:
+用途：
 
-- live YES / NO book state
-- best ask tracking
-- matched market display context
+- YES / NO 实时 order book
+- best ask 跟踪
+- matched market 展示上下文
 
-#### Binance
+### Binance
 
-Current dashboard watchlist feed:
+当前看板 watchlist 使用：
 
 - `wss://stream.binance.com:9443/ws/<symbol>@bookTicker`
 
-#### Coinbase
+### Coinbase
 
-Current dashboard watchlist feed:
+当前看板 watchlist 使用：
 
 - `wss://advanced-trade-ws.coinbase.com`
 
-#### OKX
+### OKX
 
-Current dashboard watchlist feed:
+当前看板 watchlist 使用：
 
 - `wss://ws.okx.com:8443/ws/v5/public`
 
-#### Optional auxiliary display feeds present in dashboard code
+### 可选辅助显示源
+
+当前看板代码里也预留了：
 
 - Kraken WSS
 - Bybit WSS
 
-These auxiliary feeds are display-side helpers, not the core trading source of truth.
+这些属于展示侧辅助数据，不是核心交易真相来源。
 
-## How Polymarket market matching works
+## Polymarket 市场匹配方式
 
-The dashboard and bot need fresh short-horizon Polymarket contracts.
+看板和 bot 都需要拿到当前短周期 live Polymarket 合约。
 
-High-level flow:
+高层流程如下：
 
-1. discover current live markets
-2. resolve current YES / NO token IDs
-3. subscribe those token IDs on the Polymarket CLOB websocket
-4. track live book state
-5. display current matched contracts in the dashboard
+1. 发现当前 live market
+2. 解析当前 YES / NO token ID
+3. 用这些 token ID 订阅 Polymarket CLOB WSS
+4. 跟踪实时盘口
+5. 在页面里展示当前 matched contracts
 
-## Trading strategy overview
+## 交易策略概要
 
-The dashboard is fed by a 15-minute crypto paper-trading strategy.
+这个看板后面接的是一个 15 分钟 crypto paper-trading 策略。
 
-### Universe
+### 当前交易 universe
 
-The current tracked symbols are:
+当前追踪的 symbol 包括：
 
 - BTC
 - ETH
@@ -227,119 +226,116 @@ The current tracked symbols are:
 - HYPE
 - BNB
 
-### Strategy idea
+### 策略思路
 
-The strategy is a short-horizon directional system.
+这是一个短周期方向性策略，核心依赖：
 
-It uses:
+- 多个 CEX 价格作为 leading indicator
+- Polymarket 实时盘口 / 定价
+- round 级别的结构、momentum、flip 特征
+- 足够严格的质量过滤后再开仓
 
-- multi-source CEX prices as leading indicators
-- live Polymarket pricing / book state
-- round-level structure and momentum features
-- quality filters before entry
-
-### Core logic blocks in the bot
-
-The bot currently uses these important components:
+### 当前 bot 的核心逻辑模块
 
 - `findLiveRoundMarkets`
-  - discovers current short-horizon Polymarket contracts
+  - 发现当前短周期 Polymarket live 合约
 
 - `LeaderCompositeTracker`
-  - combines CEX leader prices
-  - tracks source count and source spread
-  - tracks short-horizon momentum
+  - 组合 CEX 领先价格
+  - 跟踪 source count / source spread
+  - 跟踪短周期 momentum
 
 - `RoundTracker`
-  - records 15-minute round structure
+  - 记录每个 15 分钟 round 的结构
   - open / close / high / low
-  - flip count and flip timestamps
-  - source-quality stats
+  - flip count 和 flip 时间
+  - source-quality 统计
 
 - `estimateWinProb`
-  - estimates probability from lag / momentum / agreement / round quality
+  - 根据 lag / momentum / agreement / round quality 估算胜率
 
 - `evaluateMarket`
-  - computes whether a market is eligible
+  - 评估某个 market 当前是否 eligible
 
 - `maybeOpenTrades`
-  - opens paper trades only when thresholds pass
+  - 满足条件时才开 paper trade
 
 - `maybeSettleTrades`
-  - settles paper trades and writes ledger events
+  - round 结束后结算 paper trade，并把事件写入 ledger
 
-## WSS architecture summary
+## WSS 架构说明
 
-### Current direction
+### 当前方向
 
-The system is being pushed toward a stronger **WSS-first** architecture.
+整个系统正在往更强的 **WSS-first** 架构推进。
 
-### CEX side
+### CEX 侧
 
-The current intent is:
+当前方向是：
 
-- Binance → real-time WSS market feed
-- OKX → real-time WSS market feed
-- Coinbase → real-time WSS market feed
+- Binance → 实时 WSS 市场数据
+- OKX → 实时 WSS 市场数据
+- Coinbase → 实时 WSS 市场数据
 
-The goal is to use real-time bid/ask-derived pricing instead of mixing inconsistent last / ask snapshots.
+目标是尽量使用基于 bid/ask 推导的实时价格，而不是把 last / ask / snapshot 混在一起。
 
-### Polymarket side
+### Polymarket 侧
 
-- real-time book data is handled through CLOB WSS
-- current market / token discovery still requires metadata lookup because token IDs rotate across short-horizon rounds
+- 实时盘口主要通过 CLOB WSS 获取
+- 当前 market / token 发现仍需要依赖 metadata lookup，因为短周期 token ID 会随 round 轮换
 
-Important limitation:
+重要限制：
 
-- short-horizon Polymarket token IDs are not static
-- therefore token discovery cannot be purely websocket-only yet
-- current market metadata still has to be refreshed dynamically
+- Polymarket 短周期 market 的 token ID 不是固定不变的
+- 所以 token discovery 还不能完全纯 websocket
+- 当前系统仍需要动态刷新 market metadata
 
-## Current operational model
+## 当前运行方式
 
-Current VPS services:
+当前 VPS 上的服务包括：
 
 - `polymarket-dashboard-5011.service`
-  - serves the dashboard website on port `5011`
+  - 在端口 `5011` 提供看板网站
 
 - `polymarket-paperbot-multi.service`
-  - runs the continuous paper-trading bot loop
+  - 持续运行 paper-trading bot loop
 
-## Local usage
+## 本地运行方式
 
-Typical dashboard entry point:
+典型入口：
 
 ```bash
 node polymarket_dashboard_5011.js
 ```
 
-Production deployment is usually handled through systemd.
+生产环境一般通过 systemd 管理，而不是直接 shell 启动。
 
-## Design principles
+## 当前设计原则
 
-- no fake fills
-- no fake online state
-- no stale unrelated ledger fallback pretending to be current
-- operator-first clarity
-- trade-detail-first UI
-- strong visibility into blockers / no-trade reasons
+- 不伪造成交
+- 不伪造在线状态
+- 不把过期 ledger 假装成当前结果
+- 操作者优先
+- 交易详情优先
+- blocker / no-trade reason 要足够透明
 
-## Current purpose of this repo snapshot
+## 当前把这份内容放进仓库的目的
 
-This repo copy is meant to preserve the current dashboard implementation and explain:
+这份 repo 快照主要是为了保存：
 
-- what the website contains
-- how the live data is connected
-- how the trading system thinks and operates
-- what the runtime services are
+- 当前看板网站代码
+- 当前页面结构
+- 当前 WSS 连接方式
+- 当前交易系统的操作逻辑
+- 当前服务运行方式
 
-## Intended future direction
+## 后续可能演进方向
 
-Possible future upgrades beyond `dashboard-v1`:
+`dashboard-v1` 后面可能继续升级到：
 
-- richer trade drill-down
-- click-to-expand trade explanations
-- stronger cumulative NAV view
-- clearer source-health diagnostics
-- better activity classification
-- more explicit risk / execution summary
+- 更强的 trade drill-down
+- 点开一笔单后直接解释为什么赢/输
+- 更连续的 cumulative NAV 视图
+- 更清楚的 source-health diagnostics
+- 更干净的 activity 分类
+- 更明确的 risk / execution summary
