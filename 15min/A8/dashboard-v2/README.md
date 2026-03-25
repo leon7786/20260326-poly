@@ -1,319 +1,175 @@
-# A8 Dashboard v2 — Polymarket 15min 看板 + Paper Trader + Live Trader
+# A8 Dashboard v2 — 精简版目录
 
-## 项目概述
+## 设计目标
 
-这是 `dashboard-v1` 的升级版，核心目标是把 **WSS 实时行情 + 看板 + paper trader + live trader** 放到同一个可交接、可部署、可备份的目录中。
+`dashboard-v2` 现在改成 **精简根目录**：
+- 根目录只保留少数核心入口 / 配置文件
+- 测试脚本放到 `tests/`
+- 说明文档放到 `docs/`
+- systemd / 部署文件放到 `deploy/`
+- 主程序放到 `app/`
 
-v2 的重点不是只多一个 live 文件，而是把 **实盘执行闭环（execution lifecycle）** 补完整：
-- 下单记录
-- 订单状态跟踪
-- timeout cancel
-- startup reconcile
-- bot-managed order registry
-- 只统计 bot 自己的单，不碰用户历史手动单
+这样根目录不会很乱，交接时也更清晰。
 
 ---
 
-## 本目录内容
+## 当前目录结构
 
-```
+```bash
 dashboard-v2/
 ├── README.md
-├── .env.live.example          ← live 环境变量模板（示例占位符）
-├── paper_trader_v3.py         ← WSS paper trader v3.2
-├── README-paper_trader_v3.md
-├── live_trader.py             ← live trader（带 order lifecycle / timeout cancel / reconcile）
-├── README-live_trader.md
-├── live_sanity_check.py       ← live 只读联通检查
-├── README-live_sanity_check.md
-├── dashboard.py               ← Web 看板
-├── README-dashboard.md
-├── round_logger.py            ← 轮次记录器
-├── README-round_logger.md
-├── test_wss.py                ← WSS quick test
-├── README-test_wss.md
+├── .env.live.example
 ├── requirements.txt
-└── systemd/
-    ├── polymarket-paper.service
-    ├── README-polymarket-paper.service.md
+├── app/
+│   ├── dashboard.py
+│   ├── live_trader.py
+│   ├── paper_trader_v3.py
+│   └── round_logger.py
+├── tests/
+│   ├── live_sanity_check.py
+│   └── test_wss.py
+├── docs/
+│   ├── README-dashboard.md
+│   ├── README-live_trader.md
+│   ├── README-live_sanity_check.md
+│   ├── README-paper_trader_v3.md
+│   ├── README-round_logger.md
+│   └── README-test_wss.md
+└── deploy/
     ├── polymarket-dashboard.service
-    ├── README-polymarket-dashboard.service.md
-    ├── polymarket-round-logger.service
-    ├── README-polymarket-round-logger.service.md
     ├── polymarket-live.service
-    └── README-polymarket-live.service.md
+    ├── polymarket-paper.service
+    ├── polymarket-round-logger.service
+    ├── README-polymarket-dashboard.service.md
+    ├── README-polymarket-live.service.md
+    ├── README-polymarket-paper.service.md
+    └── README-polymarket-round-logger.service.md
 ```
 
 ---
 
-## v2 相比 v1 的主要新增
+## 根目录保留的文件
 
-### 1. Live Trader
-新增 `live_trader.py`，基于当前 15 分钟策略接入 Polymarket CLOB Level 2 auth。
+### 1. `README.md`
+主说明文件。
 
-### 2. Live Execution Lifecycle
-v2 重点补了实盘执行闭环：
-- 下单后先记录 bot-managed `order_id`
-- 未成交挂单只算 pending，不算持仓
-- 只有真实成交（filled / partial fill）才进入 position / pnl
-- timeout cancel（默认 20s）
-- startup reconcile：重启后只同步 bot 自己记录的订单
-- 不会接管或取消用户历史手动单
+### 2. `.env.live.example`
+live 配置模板，敏感字段只保留占位符示例。
 
-### 3. Live env 方案
-新增 `.env.live.example`：
-- 敏感字段用占位符示例
-- 不放真实密钥
-- 真实使用时复制为 `.env.live`
+### 3. `requirements.txt`
+Python 依赖。
 
 ---
 
-## 环境变量设计（live）
+## app/
+主程序目录，放运行脚本：
 
-### 文件
-- 示例模板：`.env.live.example`
-- 实际使用：`.env.live`
+- `dashboard.py` — Web 看板
+- `live_trader.py` — live trader
+- `paper_trader_v3.py` — paper trader
+- `round_logger.py` — 轮次记录器
 
-### 示例
+如果以后要继续精简，甚至可以只保留：
+- `app/live_trader.py`
+- `app/dashboard.py`
+
+其余脚本作为附属模块继续放子目录。
+
+---
+
+## tests/
+测试 / 检查脚本统一放这里：
+
+- `live_sanity_check.py` — 只读联通检查
+- `test_wss.py` — WSS quick test
+
+这些都不是主运行文件，所以不应该放在根目录。
+
+---
+
+## docs/
+按文件拆分的说明文档：
+
+- `README-dashboard.md`
+- `README-live_trader.md`
+- `README-live_sanity_check.md`
+- `README-paper_trader_v3.md`
+- `README-round_logger.md`
+- `README-test_wss.md`
+
+如果后续还要继续精简，也可以把这些再收敛成：
+- `docs/OPERATIONS.md`
+- `docs/RUNBOOK.md`
+
+---
+
+## deploy/
+部署与 service 文件：
+
+- `polymarket-dashboard.service`
+- `polymarket-live.service`
+- `polymarket-paper.service`
+- `polymarket-round-logger.service`
+
+以及对应的 service README。
+
+---
+
+## 建议使用方式
+
+### 安装依赖
+```bash
+pip install -r requirements.txt
+```
+
+### 运行主程序
+```bash
+cd app
+python3 dashboard.py
+python3 paper_trader_v3.py
+python3 live_trader.py check
+python3 live_trader.py
+python3 round_logger.py
+```
+
+### 跑测试脚本
+```bash
+cd tests
+python3 live_sanity_check.py
+python3 test_wss.py
+```
+
+### 使用 service 文件
+把 `deploy/` 里的 service 复制到 systemd user 目录。
+
+---
+
+## live 配置模板
+
+`.env.live.example` 里使用的是示例占位符，例如：
 
 ```bash
 POLYMARKET_PRIVATE_KEY=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 POLYMARKET_API_KEY=pk-xxxxxxxxxxxxxxxx
 POLYMARKET_RELAYER_API_KEY=rk-xxxxxxxxxxxxxxxx
-POLYMARKET_CHAIN_ID=137
 POLYMARKET_WALLET_ADDRESS=0x1111111111111111111111111111111111111111
 POLYMARKET_FUNDER_ADDRESS=0x2222222222222222222222222222222222222222
-
-LIVE_ENABLED=false
-DRY_RUN=true
-LIVE_BUDGET_USDC=10
-MAX_ORDER_USDC=1
-MAX_CONCURRENT_POSITIONS=1
-ALLOWED_COINS=BTC,ETH,SOL
-MAX_BUY_PRICE=0.30
-MAX_DAILY_LOSS_USDC=2
-ORDER_MODE=maker
-ORDER_TIMEOUT_SECONDS=20
-SYNC_INTERVAL_SECONDS=5
 ```
 
-### 含义
-
-| 变量 | 说明 |
-|---|---|
-| `POLYMARKET_PRIVATE_KEY` | signer 私钥 |
-| `POLYMARKET_API_KEY` | Polymarket developer key |
-| `POLYMARKET_RELAYER_API_KEY` | 可选，用于 gasless relayer 相关链上动作 |
-| `POLYMARKET_WALLET_ADDRESS` | signer 地址 |
-| `POLYMARKET_FUNDER_ADDRESS` | 资金实际所在的 funder / profile / proxy 地址 |
-| `LIVE_ENABLED` | 是否允许真实下单 |
-| `DRY_RUN` | 是否只做 dry-run |
-| `LIVE_BUDGET_USDC` | live 总预算 |
-| `MAX_ORDER_USDC` | 单笔最大金额 |
-| `MAX_CONCURRENT_POSITIONS` | 最大并发仓位 / slot |
-| `ALLOWED_COINS` | 白名单币种 |
-| `MAX_BUY_PRICE` | 最大可接受买价 |
-| `MAX_DAILY_LOSS_USDC` | 每日最大亏损 |
-| `ORDER_TIMEOUT_SECONDS` | 订单超时后自动撤单 |
-| `SYNC_INTERVAL_SECONDS` | bot-managed order 状态同步周期 |
-
----
-
-## 部署顺序（推荐）
-
-### Step 1 — 安装依赖
-```bash
-pip install -r requirements.txt
-pip install py-clob-client eth-account web3
-```
-
-### Step 2 — 先跑 WSS 检查
-```bash
-cd src
-python3 test_wss.py
-```
-
-### Step 3 — 配置 live env（如果要开实盘）
-```bash
-cp .env.live.example .env.live
-chmod 600 .env.live
-```
-然后手动填写真实 key / address。
-
-### Step 4 — 先做只读检查
-```bash
-python3 live_sanity_check.py
-python3 live_trader.py check
-```
-
-### Step 5 — 先启 paper / dashboard / logger
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now polymarket-paper
-systemctl --user enable --now polymarket-dashboard
-systemctl --user enable --now polymarket-round-logger
-```
-
-### Step 6 — 最后才启 live
-默认建议先：
-- `LIVE_ENABLED=false`
-- `DRY_RUN=true`
-
-确认链路正确后，再切到：
-- `LIVE_ENABLED=true`
-- `DRY_RUN=false`
-
-然后：
-```bash
-systemctl --user enable --now polymarket-live
-```
-
----
-
-## 启动 / 停止 / 查看命令
-
-### Dashboard
-```bash
-systemctl --user start polymarket-dashboard
-systemctl --user stop polymarket-dashboard
-systemctl --user restart polymarket-dashboard
-systemctl --user status polymarket-dashboard
-```
-
-### Paper Trader
-```bash
-systemctl --user start polymarket-paper
-systemctl --user stop polymarket-paper
-systemctl --user restart polymarket-paper
-systemctl --user status polymarket-paper
-```
-
-### Round Logger
-```bash
-systemctl --user start polymarket-round-logger
-systemctl --user stop polymarket-round-logger
-systemctl --user restart polymarket-round-logger
-systemctl --user status polymarket-round-logger
-```
-
-### Live Trader
-```bash
-systemctl --user start polymarket-live
-systemctl --user stop polymarket-live
-systemctl --user restart polymarket-live
-systemctl --user status polymarket-live
-```
-
-### 查看日志
-```bash
-journalctl --user -u polymarket-live -n 100 --no-pager
-journalctl --user -u polymarket-paper -n 100 --no-pager
-journalctl --user -u polymarket-dashboard -n 100 --no-pager
-journalctl --user -u polymarket-round-logger -n 100 --no-pager
-```
-
----
-
-## 故障排查 Checklist
-
-### 1. WSS 没连接上
-检查：
-- `test_wss.py` 是否通过
-- VPS 网络是否正常
-- 交易所 / Polymarket endpoint 是否可访问
-- 日志里有没有重连循环
-
-### 2. Dashboard 打不开
-检查：
-- `polymarket-dashboard.service` 是否 running
-- 5011 端口是否监听
-- VPS / 防火墙 / 云平台安全组是否放行
-
-### 3. Live check 失败
-检查：
-- `.env.live` 是否存在
-- signer / funder 地址是否填对
-- API key / private key 是否匹配
-- `live_sanity_check.py` 是否通过
-
-### 4. 有余额但 live 不能下单
-检查：
-- collateral 是否在 `funder/profile` 地址
-- allowance 是否已经就绪
-- `MAX_BUY_PRICE` 是否太低
-- 白名单币种是否限制住了
-- `LIVE_ENABLED` / `DRY_RUN` 是否配置正确
-
-### 5. 订单发出但没有成交
-这是正常情况的一部分。v2 已支持：
-- pending order
-- timeout cancel
-- startup reconcile
-- 只有 filled 才记为 position
-
-### 6. 手动单和 bot 单混在同一账户
-v2 方案是：
-- bot 只认自己记录过的 `order_id`
-- 不接管旧的手动单
-- 不取消非 bot-managed 订单
-
----
-
-## Live 风险提示
-
-### 1. 先 dry-run，再实盘
-强烈建议流程：
-1. `live_sanity_check.py`
-2. `live_trader.py check`
-3. `DRY_RUN=true`
-4. 观察无误后再开启 `LIVE_ENABLED=true`
-
-### 2. 不要把真实 `.env.live` 提交到 GitHub
-仓库里只能放：
-- `.env.live.example`
-
-不能放：
-- 真私钥
-- 真 API key
-- 真 relayer key
-
-### 3. signer / funder/profile 结构要分清
-常见情况：
-- `signer`：签名地址
-- `funder/profile`：真正放 collateral 的地址
-
-有时 Binance 能转到某个普通地址，但不代表那就是 CLOB 真正使用的 collateral 地址。
-
-### 4. Relayer key 不是基础下单必需项
-当前基础 CLOB 下单、查单、撤单通常不依赖 relayer key；
-但未来做这些时会有价值：
-- redeem
-- split / merge
-- convert
-- gasless relayer operations
-
-### 5. live 版本仍应持续观察
-v2 已经补上 order lifecycle，但实盘永远应小仓位启动、逐步观察。
-
----
-
-## 建议使用流程（最稳妥版本）
-
-1. 跑 `paper_trader_v3.py`
-2. 开 `dashboard.py`
-3. 跑 `round_logger.py`
-4. 配置 `.env.live`
-5. 跑 `live_sanity_check.py`
-6. 跑 `live_trader.py check`
-7. 先 `DRY_RUN=true`
-8. 观察 bot-managed order 行为
-9. 再切 `LIVE_ENABLED=true`
-10. 小额实盘，盯首单
+真实使用时：
+1. 复制成 `.env.live`
+2. 填真实值
+3. 不要提交到 GitHub
 
 ---
 
 ## 说明
-- 不要把真实 `.env.live` 提交到 GitHub
-- `.env.live.example` 仅作为模板
-- 若使用 signer + funder/profile 结构，资金通常在 funder/profile 地址上
-- v2 的重点是：**让 live 可运行，也更可审计、可恢复、可控**
+
+这版调整的核心不是删文件，而是把目录结构整理成：
+- 根目录简洁
+- 主程序集中
+- 测试脚本归档
+- 文档归档
+- 部署文件归档
+
+这样后续你看 `dashboard-v2` 时，不会一眼看到很多散文件。
