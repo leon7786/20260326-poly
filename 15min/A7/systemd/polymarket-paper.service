@@ -1,0 +1,15 @@
+[Unit]
+Description=Polymarket Paper Trader v3.1
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/polymarket-arb/src
+ExecStart=/root/projects/polymarket-arb/venv/bin/python3 -u paper_trader_v3.py
+StandardOutput=append:/root/projects/polymarket-arb/output/paper_trader.log
+StandardError=append:/root/projects/polymarket-arb/output/paper_trader.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
