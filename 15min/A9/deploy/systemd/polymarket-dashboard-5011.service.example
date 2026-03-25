@@ -1,0 +1,18 @@
+[Unit]
+Description=A9 Polymarket Dashboard on port 5011
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/a9-15min
+ExecStart=/usr/bin/node /opt/a9-15min/dashboard-v1/polymarket_dashboard_5011.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

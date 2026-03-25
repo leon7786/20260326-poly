@@ -1,0 +1,18 @@
+[Unit]
+Description=A9 Polymarket Crypto Paper Bot Multi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/a9-15min
+ExecStart=/usr/bin/bash /opt/a9-15min/trading-system-v1/run_polymarket_crypto_paperbot_multi_service.sh
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
