@@ -8,7 +8,7 @@ import time
 import threading
 import statistics
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from collections import deque
@@ -894,26 +894,44 @@ class Handler(BaseHTTPRequestHandler):
         pass  # 静默日志
 
     def do_GET(self):
-        if self.path == '/' or self.path == '/index.html':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(HTML.encode())
-        elif self.path == '/api/data':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            data = {
-                "coins": engine.get_snapshot(),
-                "trades": engine.get_trades(),
-                "state": engine.get_state(),
-                "ts": datetime.now(timezone.utc).isoformat(),
-            }
-            self.wfile.write(json.dumps(data, default=str).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
+        try:
+            if self.path == '/' or self.path == '/index.html':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(HTML.encode())
+            elif self.path == '/api/data':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                data = {
+                    "coins": engine.get_snapshot(),
+                    "trades": engine.get_trades(),
+                    "state": engine.get_state(),
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+                self.wfile.write(json.dumps(data, default=str).encode())
+            elif self.path == '/healthz':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(b'ok')
+            else:
+                self.send_response(404)
+                self.end_headers()
+        except BrokenPipeError:
+            pass
+        except ConnectionResetError:
+            pass
+        except Exception as e:
+            try:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(f'dashboard error: {e}'.encode())
+            except Exception:
+                pass
 
 
 def main():
@@ -923,7 +941,7 @@ def main():
     t.start()
     print(f"🔮 Polymarket Dashboard starting on http://0.0.0.0:{port}", flush=True)
     print(f"   监控: {', '.join(COINS[c]['name'] for c in COINS)}", flush=True)
-    server = HTTPServer(('0.0.0.0', port), Handler)
+    server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
