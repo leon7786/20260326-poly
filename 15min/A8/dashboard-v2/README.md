@@ -5,19 +5,29 @@
 ```
 dashboard-v2/
 ├── README.md
-├── .env.live.example          ← live 环境变量模板（密钥留空）
+├── .env.live.example          ← live 环境变量模板（示例占位符）
 ├── paper_trader_v3.py         ← WSS paper trader v3.2
+├── README-paper_trader_v3.md
 ├── live_trader.py             ← live trader（带 order lifecycle / timeout cancel / reconcile）
+├── README-live_trader.md
 ├── live_sanity_check.py       ← live 只读联通检查
+├── README-live_sanity_check.md
 ├── dashboard.py               ← Web 看板
+├── README-dashboard.md
 ├── round_logger.py            ← 轮次记录器
+├── README-round_logger.md
 ├── test_wss.py                ← WSS quick test
+├── README-test_wss.md
 ├── requirements.txt
 └── systemd/
     ├── polymarket-paper.service
+    ├── README-polymarket-paper.service.md
     ├── polymarket-dashboard.service
+    ├── README-polymarket-dashboard.service.md
     ├── polymarket-round-logger.service
-    └── polymarket-live.service
+    ├── README-polymarket-round-logger.service.md
+    ├── polymarket-live.service
+    └── README-polymarket-live.service.md
 ```
 
 ## v2 相比 v1 的主要新增
