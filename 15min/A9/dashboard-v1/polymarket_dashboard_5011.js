@@ -173,6 +173,50 @@ function symbolFromText(text) {
   return null;
 }
 
+const BLOCKER_LABELS = {
+  not_enough_source_agreement: '多源一致性不足',
+  insufficient_source_coverage: '来源覆盖不足',
+  edge_too_small: '优势不足',
+  poly_lag_too_small: 'Polymarket 滞后太小',
+  too_many_flips: '翻转次数过多',
+  round_quality_too_low: '本轮质量过低',
+  source_spread_too_wide: '多源价差过大',
+  recent_flip_too_close: '最近翻转离现在太近',
+  mom15_contrary: '15秒动量反向',
+  mom60_contrary: '60秒动量反向',
+  mom15_not_aligned: '15秒动量未对齐',
+  round_too_young: '本轮太早',
+  price_too_expensive: '价格过贵',
+  estimated_win_prob_below_threshold: '估算胜率低于门槛',
+  ev_per_minute_too_small: '单位时间期望收益过小',
+};
+
+const BLOCKER_SEVERITY = {
+  estimated_win_prob_below_threshold: 100,
+  too_many_flips: 95,
+  round_quality_too_low: 90,
+  recent_flip_too_close: 85,
+  source_spread_too_wide: 80,
+  not_enough_source_agreement: 78,
+  insufficient_source_coverage: 76,
+  mom15_contrary: 72,
+  mom60_contrary: 68,
+  mom15_not_aligned: 64,
+  poly_lag_too_small: 58,
+  edge_too_small: 54,
+  round_too_young: 50,
+  price_too_expensive: 46,
+  ev_per_minute_too_small: 42,
+};
+
+function blockerLabel(x) {
+  return BLOCKER_LABELS[x] || x;
+}
+
+function orderedBlockers(xs) {
+  return (xs || []).slice().sort((a, b) => (BLOCKER_SEVERITY[b] || 0) - (BLOCKER_SEVERITY[a] || 0));
+}
+
 function minsText(ms) {
   const n = Number(ms);
   return Number.isFinite(n) ? `${Math.round(n / 60000)}m` : '—';
@@ -553,7 +597,7 @@ function loadPaperState() {
 function render() {
   const budget = state.paper?.budget || {};
   const stats = state.paper?.stats || {};
-  const notesText = state.notes.slice(0, 8).map((x) => `[${fmtDate(x.ts)}] ${x.msg}`).join('\n') || 'No notes yet';
+  const notesText = state.notes.slice(0, 8).map((x) => `[${fmtDate(x.ts)}] ${x.msg}`).join('\n') || '暂无运行备注';
   const preferredSourceOrder = ['binance', 'okx', 'coinbase', 'kraken', 'bybit'];
   const chosenCount = Array.isArray(state.paper?.chosenMarkets) ? state.paper.chosenMarkets.length : 0;
   const lastTradeTs = state.paper?.trades?.[0]?.ts || '—';
@@ -565,25 +609,25 @@ function render() {
   const decisions = state.paper.decisions || [];
 
   function sourceLine(signal) {
-    if (!signal || !signal.prices) return 'No live prices yet';
+    if (!signal || !signal.prices) return '暂无实时价格';
     const xs = preferredSourceOrder
       .filter((name) => signal.prices[name] != null)
       .map((name) => `${name}: ${signal.prices[name]}`);
-    return xs.length ? xs.join(' · ') : 'No live prices yet';
+    return xs.length ? xs.join(' · ') : '暂无实时价格';
   }
 
   function topRecSummary(rec) {
-    if (!rec) return 'No active setup';
+    if (!rec) return '暂无可执行 setup';
     const bestAsk = rec.rec.side === 'YES' ? rec.yesAsk : rec.noAsk;
-    return `${rec.rec.side} · ask ${bestAsk ?? '—'} · score ${rec.rec.score} · ${minsText(rec.rec.msToEnd)}`;
+    return `${rec.rec.side} · 价位 ${bestAsk ?? '—'} · 评分 ${rec.rec.score} · ${minsText(rec.rec.msToEnd)}`;
   }
 
   const topStats = [
-    { label: 'Bot', value: botOnline ? 'ONLINE' : 'OFFLINE', note: botLagSec == null ? 'No heartbeat' : `Lag ${fmtSec(botLagSec)}`, cls: botOnline ? 'good' : 'bad' },
-    { label: 'Mode', value: state.paper.botMode || 'unknown', note: `${safeNum(status.liveMarketsFound, 0)} live mkts`, cls: safeNum(status.liveMarketsFound, 0) ? 'good' : 'warn' },
-    { label: 'Paper NAV', value: stats.balance != null ? fmtDollar(stats.balance) : '—', note: `Net budget ${fmtDollar(budget.netBudget)}`, cls: '' },
-    { label: 'Realized PnL', value: stats.realizedPnl != null ? fmtSignedDollar(stats.realizedPnl) : '—', note: `Closed ${safeNum(stats.closedTrades, 0)}`, cls: toneClass(stats.realizedPnl) },
-    { label: 'Last Fill', value: lastTradeTs === '—' ? '—' : fmtTs(lastTradeTs), note: lastTradeTs === '—' ? 'No recent trade' : fmtDate(lastTradeTs), cls: '' },
+    { label: '机器人', value: botOnline ? '在线' : '离线', note: botLagSec == null ? '暂无心跳' : `延迟 ${fmtSec(botLagSec)}`, cls: botOnline ? 'good' : 'bad' },
+    { label: '模式', value: state.paper.botMode || 'unknown', note: `${safeNum(status.liveMarketsFound, 0)} 个 live 市场`, cls: safeNum(status.liveMarketsFound, 0) ? 'good' : 'warn' },
+    { label: '纸面净值', value: fmtDollar(10), note: `净预算 ${fmtDollar(budget.netBudget)}`, cls: '' },
+    { label: '已实现盈亏', value: stats.realizedPnl != null ? fmtSignedDollar(stats.realizedPnl) : '—', note: `已平仓 ${safeNum(stats.closedTrades, 0)} 笔`, cls: toneClass(stats.realizedPnl) },
+    { label: '最近成交', value: lastTradeTs === '—' ? '—' : fmtTs(lastTradeTs), note: lastTradeTs === '—' ? '暂无成交' : fmtDate(lastTradeTs), cls: '' },
   ].map((x) => `
     <div class="kpi-card">
       <div class="kpi-label">${esc(x.label)}</div>
@@ -597,12 +641,12 @@ function render() {
       const symbol = t.symbol || symbolFromText(t.question) || '—';
       const isClose = t.type === 'close';
       const pnlNum = Number(t.pnl);
-      const statusPill = !isClose ? 'LIVE' : (pnlNum > 0 ? 'WIN' : (pnlNum < 0 ? 'LOSS' : 'FLAT'));
+      const statusPill = !isClose ? '开仓记录' : (pnlNum > 0 ? '盈利' : (pnlNum < 0 ? '亏损' : '持平'));
       const statusClass = !isClose ? 'status-live' : (pnlNum > 0 ? 'status-win' : (pnlNum < 0 ? 'status-loss' : 'status-flat'));
       const priceText = !isClose
         ? `${Number.isFinite(Number(t.entryPrice)) ? Number(t.entryPrice).toFixed(4) : '—'} / ${Number.isFinite(Number(t.shares)) ? Number(t.shares).toFixed(4) : '—'}sh`
         : `${fmtDollar(t.payout)} payout`;
-      const pnlText = isClose ? fmtSignedDollar(t.pnl) : 'Open';
+      const pnlText = isClose ? fmtSignedDollar(t.pnl) : '开仓事件';
       return `
         <tr class="${isClose ? 'row-close' : 'row-open'}">
           <td class="mono trade-time-cell"><div class="trade-time-main">${esc(fmtTs(t.ts || '—'))}</div><div class="trade-time-sub">${esc(fmtDate(t.ts || '—'))}</div></td>
@@ -617,11 +661,11 @@ function render() {
         </tr>
       `;
     }).join('')
-    : '<tr><td colspan="9" class="empty-state">No recent executions. Current ledger has no fresh paper trades.</td></tr>';
+    : '<tr><td colspan="9" class="empty-state">暂无最近成交。当前 ledger 里还没有新的 paper trade。</td></tr>';
 
   const noTradeRows = decisions.length
     ? decisions.slice(0, 12).map((d) => {
-      const blockersText = (d.blockers || []).slice(0, 3).join(', ') || (d.pass ? 'pass' : 'no blockers');
+      const blockersText = orderedBlockers(d.blockers || []).slice(0, 3).map(blockerLabel).join('，') || (d.pass ? '通过' : '无 blocker');
       return `
         <tr>
           <td class="symbol-cell">${esc(d.symbol || '—')}</td>
@@ -633,7 +677,7 @@ function render() {
         </tr>
       `;
     }).join('')
-    : '<tr><td colspan="6" class="empty-state">No decision board available in latest status.</td></tr>';
+    : '<tr><td colspan="6" class="empty-state">最新状态里还没有 decision board。</td></tr>';
 
   const roundRows = Object.keys(SYMBOLS).map((sym) => {
     const ps = perSymbolLearning[sym] || {};
@@ -653,29 +697,42 @@ function render() {
         <td class="mono">${esc(latestFlip ? `${fmtTs(latestFlip.ts)} / ${fmtSec(latestFlip.secondsFromRoundOpen)}` : '—')}</td>
         <td class="mono">${esc(flipTimeline)}</td>
         <td class="mono">${esc(momentum)}</td>
-        <td class="mono">${esc(leader ? `${leader.sourceCount} src / ${fmtBps(leader.spreadBps, 2)}` : '—')}</td>
-        <td class="mono">${esc(topDecision ? (topDecision.pass ? 'PASS' : (topDecision.blockers || []).slice(0, 2).join(', ')) : '—')}</td>
+        <td class="mono">${esc(leader ? `${leader.sourceCount} 源 / ${fmtBps(leader.spreadBps, 2)}` : '—')}</td>
+        <td class="mono">${esc(topDecision ? (topDecision.pass ? '通过' : orderedBlockers(topDecision.blockers || []).slice(0, 2).map(blockerLabel).join('，')) : '—')}</td>
       </tr>
     `;
   }).join('');
 
   const blockerPills = blockerCounts.length
     ? blockerCounts.map((x) => `<div class="blocker-pill"><span>${esc(x.blocker)}</span><b>${esc(String(x.count))}</b></div>`).join('')
-    : '<div class="empty-mini">No blocker stats yet</div>';
+    : '<div class="empty-mini">暂时还没有 blocker 统计</div>';
 
-  const nearestSetup = (decisions || []).slice().sort((a, b) => (b.estimatedWinProb || 0) - (a.estimatedWinProb || 0))[0] || null;
+  const nearestSetup = (decisions || []).slice().sort((a, b) => {
+    const aBlockers = (a.blockers || []).length;
+    const bBlockers = (b.blockers || []).length;
+    const aPenalty = Math.max(0, safeNum(a.flipCount, 0) - 2) * 0.03 + Math.max(0, 4 - safeNum(a.roundQuality, 0)) * 0.02;
+    const bPenalty = Math.max(0, safeNum(b.flipCount, 0) - 2) * 0.03 + Math.max(0, 4 - safeNum(b.roundQuality, 0)) * 0.02;
+    const aScore = safeNum(a.estimatedWinProb, 0) - aBlockers * 0.08 - aPenalty;
+    const bScore = safeNum(b.estimatedWinProb, 0) - bBlockers * 0.08 - bPenalty;
+    return bScore - aScore || aBlockers - bBlockers || safeNum(b.roundQuality, 0) - safeNum(a.roundQuality, 0);
+  })[0] || null;
+  const nearestSetupBlockers = nearestSetup ? orderedBlockers(nearestSetup.blockers || []) : [];
+  const nearestSetupProgress = nearestSetup ? Math.max(0, Math.min(100, Math.round((1 - nearestSetupBlockers.length / 6) * 100))) : 0;
   const firstTradeWatch = nearestSetup ? `
     <div class="side-section first-watch">
-      <div class="side-title">First trade watch</div>
+      <div class="side-title">最接近成交</div>
       <div class="watch-headline">${esc(nearestSetup.symbol || '—')} · ${esc(nearestSetup.direction || '—')} · ${esc(fmtPct((nearestSetup.estimatedWinProb || 0) * 100))}</div>
-      <div class="watch-detail">ask ${esc(nearestSetup.desiredAsk != null ? String(nearestSetup.desiredAsk) : '—')} · lag ${esc(nearestSetup.polyLag != null ? nearestSetup.polyLag.toFixed(4) : '—')} · flips ${esc(String(nearestSetup.flipCount ?? '—'))}</div>
-      <div class="watch-detail">quality ${esc(nearestSetup.roundQuality != null ? nearestSetup.roundQuality.toFixed(2) : '—')} · spread ${esc(fmtBps(nearestSetup.sourceSpreadBps, 2))}</div>
-      <div class="watch-blockers">${esc((nearestSetup.blockers || []).slice(0, 5).join(' · ') || 'pass')}</div>
+      <div class="watch-detail">目标价 ${esc(nearestSetup.desiredAsk != null ? String(nearestSetup.desiredAsk) : '—')} · 滞后 ${esc(nearestSetup.polyLag != null ? nearestSetup.polyLag.toFixed(4) : '—')} · flips ${esc(String(nearestSetup.flipCount ?? '—'))}</div>
+      <div class="watch-detail">质量 ${esc(nearestSetup.roundQuality != null ? nearestSetup.roundQuality.toFixed(2) : '—')} · spread ${esc(fmtBps(nearestSetup.sourceSpreadBps, 2))}</div>
+      <div class="progress-meta"><span>通过进度</span><b>${esc(String(nearestSetupProgress))}%</b></div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${nearestSetupProgress}%"></div></div>
+      <div class="watch-detail">还差 ${esc(String(nearestSetupBlockers.length))} 项条件</div>
+      <div class="watch-blockers">${esc(nearestSetupBlockers.length ? `仍缺条件：${nearestSetupBlockers.slice(0, 5).map(blockerLabel).join(' · ')}` : '当前已通过')}</div>
     </div>
   ` : `
     <div class="side-section first-watch">
-      <div class="side-title">First trade watch</div>
-      <div class="empty-mini">No near-eligible setup yet.</div>
+      <div class="side-title">最接近成交</div>
+      <div class="empty-mini">暂时还没有接近可成交的 setup。</div>
     </div>
   `;
 
@@ -684,10 +741,10 @@ function render() {
       const type = x.type || 'event';
       const symbol = x.symbol || '—';
       let detail = '';
-      if (type === 'early_exit_signal') detail = `${x.reason || 'exit'} · ${x.currentEval?.direction || '—'} · ${x.currentEval?.question || x.marketId || ''}`;
+      if (type === 'early_exit_signal') detail = `${x.reason || '退出'} · ${x.currentEval?.direction || '—'} · ${x.currentEval?.question || x.marketId || ''}`;
       else if (type === 'open_decision') detail = `${x.direction || '—'} · ${x.question || x.marketId || ''}`;
-      else if (type === 'settle_decision') detail = `${x.won ? 'WIN' : 'LOSS'} · ${x.roundSummary?.roundEndTs || x.marketId || ''}`;
-      else if (type === 'status_report') detail = `balance ${fmtDollar(x.stats?.balance)} · open ${safeNum(x.stats?.openTrades, 0)} · closed ${safeNum(x.stats?.closedTrades, 0)}`;
+      else if (type === 'settle_decision') detail = `${x.won ? '盈利' : '亏损'} · ${x.roundSummary?.roundEndTs || x.marketId || ''}`;
+      else if (type === 'status_report') detail = `余额 ${fmtDollar(x.stats?.balance)} · 持仓 ${safeNum(x.stats?.openTrades, 0)} · 已平仓 ${safeNum(x.stats?.closedTrades, 0)}`;
       else detail = x.reason || x.marketId || '';
       return `
         <tr>
@@ -698,7 +755,7 @@ function render() {
         </tr>
       `;
     }).join('')
-    : '<tr><td colspan="4" class="empty-state">No activity feed yet.</td></tr>';
+    : '<tr><td colspan="4" class="empty-state">暂时还没有 activity feed。</td></tr>';
 
   const matchedMarketRows = (state.paper.chosenMarkets || []).length
     ? state.paper.chosenMarkets.map((m) => `
@@ -710,7 +767,7 @@ function render() {
         <td class="mono">${esc(fmtDollar(m.volume24hr))}</td>
       </tr>
     `).join('')
-    : '<tr><td colspan="5" class="empty-state">No matched live markets yet.</td></tr>';
+    : '<tr><td colspan="5" class="empty-state">暂时还没有命中的 live 市场。</td></tr>';
 
   const watchlistCards = Object.keys(SYMBOLS).map((sym) => {
     const signal = aggregateSignal(sym);
@@ -718,13 +775,13 @@ function render() {
     const top = recs[0] || null;
     const ps = perSymbolLearning[sym] || {};
     const latest = ps.roundLatestCompleted || ps.roundCurrent || null;
-    const flipInfo = latest ? `${latest.flipCount} flips · last ${latest.flips?.length ? fmtSec(latest.flips[latest.flips.length - 1].secondsFromRoundOpen) : '—'}` : 'No round yet';
+    const flipInfo = latest ? `${latest.flipCount} 次翻转 · 最近 ${latest.flips?.length ? fmtSec(latest.flips[latest.flips.length - 1].secondsFromRoundOpen) : '—'}` : '暂无本轮数据';
     const priceLine = sourceLine(signal);
     return `
       <div class="watch-card">
         <div class="watch-top">
           <div class="watch-symbol">${esc(sym)}</div>
-          <div class="watch-badge">${signal ? `${signal.sourceCount} src` : '0 src'}</div>
+          <div class="watch-badge">${signal ? `${signal.sourceCount} 源` : '0 源'}</div>
         </div>
         <div class="watch-price">${esc(priceLine)}</div>
         <div class="watch-signal ${top ? '' : 'muted'}">${esc(topRecSummary(top))}</div>
@@ -735,24 +792,24 @@ function render() {
 
   const metaPills = `
     <div class="meta-row">
-      <div class="meta-pill">Status: ${esc(state.paper.latestStatusFile || '—')}</div>
-      <div class="meta-pill">Summary: ${esc(state.paper.latestSummaryFile || '—')}</div>
-      <div class="meta-pill">Trade log: ${esc(state.paper.tradeLogFile || '—')}</div>
-      <div class="meta-pill">Chosen mkts: ${esc(chosenCount)}</div>
-      <div class="meta-pill">Status ts: ${esc(fmtDate(status.ts || state.paper.latestStatusMtime || '—'))}</div>
+      <div class="meta-pill">状态文件：${esc(state.paper.latestStatusFile || '—')}</div>
+      <div class="meta-pill">摘要文件：${esc(state.paper.latestSummaryFile || '—')}</div>
+      <div class="meta-pill">交易日志：${esc(state.paper.tradeLogFile || '—')}</div>
+      <div class="meta-pill">命中市场：${esc(chosenCount)}</div>
+      <div class="meta-pill">状态时间：${esc(fmtDate(status.ts || state.paper.latestStatusMtime || '—'))}</div>
     </div>
   `;
 
   const opsPanel = `
     <div class="side-section">
-      <div class="side-title">Bot status</div>
+      <div class="side-title">机器人状态</div>
       <div class="ops-grid">
-        <div class="ops-item"><span>Bot</span><b class="${botOnline ? 'good' : 'bad'}">${esc(botOnline ? 'ONLINE' : 'OFFLINE')}</b></div>
-        <div class="ops-item"><span>Mode</span><b>${esc(state.paper.botMode || 'unknown')}</b></div>
-        <div class="ops-item"><span>Last heartbeat</span><b>${esc(fmtTs(status.ts || state.paper.latestStatusMtime || '—'))}</b></div>
-        <div class="ops-item"><span>Lag</span><b>${esc(fmtSec(botLagSec))}</b></div>
-        <div class="ops-item"><span>Open trades</span><b>${esc(safeNum(stats.openTrades, 0))}</b></div>
-        <div class="ops-item"><span>Closed trades</span><b>${esc(safeNum(stats.closedTrades, 0))}</b></div>
+        <div class="ops-item"><span>机器人</span><b class="${botOnline ? 'good' : 'bad'}">${esc(botOnline ? '在线' : '离线')}</b></div>
+        <div class="ops-item"><span>模式</span><b>${esc(state.paper.botMode || 'unknown')}</b></div>
+        <div class="ops-item"><span>最近心跳</span><b>${esc(fmtTs(status.ts || state.paper.latestStatusMtime || '—'))}</b></div>
+        <div class="ops-item"><span>延迟</span><b>${esc(fmtSec(botLagSec))}</b></div>
+        <div class="ops-item"><span>持仓中</span><b>${esc(safeNum(stats.openTrades, 0))}</b></div>
+        <div class="ops-item"><span>已平仓</span><b>${esc(safeNum(stats.closedTrades, 0))}</b></div>
       </div>
       <div class="ops-note">${esc(state.paper.tradeLogNote || '')}</div>
     </div>
@@ -760,28 +817,28 @@ function render() {
 
   const blockerPanel = `
     <div class="side-section">
-      <div class="side-title">No-trade / blockers</div>
+      <div class="side-title">不交易 / 阻塞原因</div>
       <div class="blocker-grid">${blockerPills}</div>
     </div>
   `;
 
   const strategyPanel = `
     <div class="side-section">
-      <div class="side-title">Strategy snapshot</div>
+      <div class="side-title">策略快照</div>
       <ul class="strategy-list">
-        <li>Focus: short-dated crypto contracts / paper execution</li>
-        <li>Lead sources: Binance / OKX / Coinbase</li>
-        <li>Primary edge: lag + momentum + source agreement</li>
-        <li>Current mode: ${esc(state.paper.botMode || 'unknown')}</li>
-        <li>Live markets found: ${esc(String(safeNum(status.liveMarketsFound, 0)))}</li>
-        <li>Signals file: ${esc(state.paper.signalsFile || '—')}</li>
+        <li>当前重点：短周期 crypto 合约 / paper execution</li>
+        <li>领先源：Binance / OKX / Coinbase</li>
+        <li>核心优势：lag + momentum + 多源一致性</li>
+        <li>当前模式：${esc(state.paper.botMode || 'unknown')}</li>
+        <li>已发现 live 市场：${esc(String(safeNum(status.liveMarketsFound, 0)))}</li>
+        <li>signals 文件：${esc(state.paper.signalsFile || '—')}</li>
       </ul>
     </div>
   `;
 
   const notesPanel = `
     <div class="side-section notes-panel">
-      <div class="side-title">Recent ops notes</div>
+      <div class="side-title">最近运行备注</div>
       <pre>${esc(notesText)}</pre>
     </div>
   `;
@@ -808,7 +865,7 @@ function render() {
 html,body{margin:0;padding:0;background:var(--bg);color:var(--ink)}
 body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;overflow:auto}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
-.shell{width:min(2480px, calc(100vw - 28px));margin:12px auto;display:grid;grid-template-rows:auto auto auto minmax(0,1fr);gap:12px}
+.shell{width:min(2480px, calc(100vw * 5 / 7));margin:12px auto;display:grid;grid-template-rows:auto auto auto minmax(0,1fr);gap:12px}
 .hero,.kpi-strip,.panel,.side-section{background:linear-gradient(180deg, rgba(251,247,239,.98) 0%, rgba(246,240,228,.98) 100%);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}
 .hero{padding:14px 18px;display:flex;justify-content:space-between;align-items:end;gap:18px}
 .eyebrow{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
@@ -875,6 +932,9 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
 .first-watch{border:1px solid rgba(138,111,67,.22);background:linear-gradient(180deg, rgba(255,251,241,.98) 0%, rgba(247,239,222,.98) 100%)}
 .watch-headline{font-size:18px;font-weight:800;line-height:1.15;color:var(--ink)}
 .watch-detail{margin-top:8px;font-size:12px;line-height:1.45;color:var(--muted)}
+.progress-meta{margin-top:10px;display:flex;justify-content:space-between;align-items:center;font-size:11px;letter-spacing:.04em;color:var(--muted);font-weight:700}
+.progress-bar{margin-top:6px;height:8px;border-radius:999px;background:rgba(138,111,67,.12);overflow:hidden}
+.progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg, #b07a12 0%, #8a6f43 55%, #1f8b5d 100%)}
 .watch-blockers{margin-top:10px;font-size:12px;line-height:1.45;color:var(--bad);font-weight:700}
 .notes-panel{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr)}
 .notes-panel pre{margin:0;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;color:var(--muted)}
@@ -898,7 +958,7 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
 <div class="shell">
   <section class="hero">
     <div>
-      <div class="eyebrow">Bot Cockpit · Paper Trading Desk</div>
+      <div class="eyebrow">自动交易控制台 · 纸面交易台</div>
       <h1>自动交易控制台 / Bot cockpit</h1>
       <p>前台先做成真实可信的 bot control panel：主屏优先展示交易详情、决策拒绝原因、7 币 round intelligence 和 flip 时间；页面时间统一按 GMT+8 / Asia/Shanghai 显示；后台策略后面只保留一个单实例无间断 runner。</p>
     </div>
@@ -912,14 +972,14 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
       <section class="panel">
         <div class="panel-head">
           <div>
-            <h2 class="panel-title">Trade Blotter</h2>
-            <p class="panel-sub">最近 paper execution / fills / balance path / realized PnL</p>
+            <h2 class="panel-title">交易明细</h2>
+            <p class="panel-sub">历史开仓/平仓事件与余额变化；是否仍在持仓，以「机器人状态 → 持仓中」为准。</p>
           </div>
         </div>
         <div class="table-shell scroll">
           <table>
             <thead>
-              <tr><th>Trade Time<br>GMT+8</th><th>Status</th><th>Symbol</th><th class="question">Market / Contract</th><th>Side</th><th>Stake</th><th>Px / Size</th><th>Balance</th><th>PnL</th></tr>
+              <tr><th>交易时间<br>GMT+8</th><th>状态</th><th>币种</th><th class="question">市场 / 合约</th><th>方向</th><th>投入</th><th>价格 / 数量</th><th>余额</th><th>盈亏</th></tr>
             </thead>
             <tbody>${tradeRows}</tbody>
           </table>
@@ -931,15 +991,15 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
           <div class="split-col">
             <div class="panel-head compact-head">
               <div>
-                <h2 class="panel-title">Activity feed</h2>
-                <p class="panel-sub">execution attempts / early exits / status heartbeat</p>
+                <h2 class="panel-title">运行事件流</h2>
+                <p class="panel-sub">执行尝试 / 提前退出 / 状态心跳</p>
               </div>
             </div>
             <div class="table-shell split-shell">
               <div class="scroll">
                 <table>
                   <thead>
-                    <tr><th>Time<br>GMT+8</th><th>Event</th><th>Symbol</th><th class="question">Detail</th></tr>
+                    <tr><th>时间<br>GMT+8</th><th>事件</th><th>币种</th><th class="question">详情</th></tr>
                   </thead>
                   <tbody>${activityRows}</tbody>
                 </table>
@@ -949,15 +1009,15 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
           <div class="split-col">
             <div class="panel-head compact-head">
               <div>
-                <h2 class="panel-title">Matched markets</h2>
-                <p class="panel-sub">scanner 现在实际盯住的 live contracts</p>
+                <h2 class="panel-title">命中市场</h2>
+                <p class="panel-sub">scanner 当前实际盯住的 live 合约</p>
               </div>
             </div>
             <div class="table-shell split-shell">
               <div class="scroll">
                 <table>
                   <thead>
-                    <tr><th>Symbol</th><th class="question">Contract</th><th>End<br>GMT+8</th><th>Liq</th><th>Vol24h</th></tr>
+                    <tr><th>币种</th><th class="question">合约</th><th>结束时间<br>GMT+8</th><th>流动性</th><th>24h成交量</th></tr>
                   </thead>
                   <tbody>${matchedMarketRows}</tbody>
                 </table>
@@ -970,14 +1030,14 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
       <section class="panel">
         <div class="panel-head">
           <div>
-            <h2 class="panel-title">No-trade decisions</h2>
-            <p class="panel-sub">不成交不是空白，而是策略过滤器本身的信号。这里直接看 pass / blocker。</p>
+            <h2 class="panel-title">不交易决策</h2>
+            <p class="panel-sub">不成交不是空白，而是策略过滤器本身的信号。这里直接看通过 / blocker。</p>
           </div>
         </div>
         <div class="table-shell scroll">
           <table>
             <thead>
-              <tr><th>Symbol</th><th>Dir</th><th>Win Prob</th><th>Round Quality</th><th>Last Flip Age</th><th>Top blockers</th></tr>
+              <tr><th>币种</th><th>方向</th><th>胜率估计</th><th>Round 质量</th><th>距上次翻转</th><th>主要 blocker</th></tr>
             </thead>
             <tbody>${noTradeRows}</tbody>
           </table>
@@ -987,14 +1047,14 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
       <section class="panel">
         <div class="panel-head">
           <div>
-            <h2 class="panel-title">7-symbol round board</h2>
-            <p class="panel-sub">每 15m round 的开盘价、翻转次数、flip 时间、momentum、source 质量与当前 decision。</p>
+            <h2 class="panel-title">7币种 round 看板</h2>
+            <p class="panel-sub">每个 15m round 的开盘价、翻转次数、flip 时间、momentum、source 质量与当前决策。</p>
           </div>
         </div>
         <div class="table-shell scroll">
           <table>
             <thead>
-              <tr><th>Symbol</th><th>Open</th><th>Move</th><th>Flips</th><th>Last flip</th><th>Flip timeline</th><th>Mom 5/15/60</th><th>Sources</th><th>Decision</th></tr>
+              <tr><th>币种</th><th>开盘价</th><th>波动</th><th>翻转数</th><th>最近翻转</th><th>翻转时间线</th><th>动量 5/15/60</th><th>来源</th><th>决策</th></tr>
             </thead>
             <tbody>${roundRows}</tbody>
           </table>
@@ -1004,7 +1064,7 @@ tbody tr:hover{background:rgba(138,111,67,.05)}
 
     <aside class="sidebar">
       <section class="side-section">
-        <div class="side-title">Watchlist</div>
+        <div class="side-title">观察列表</div>
         <div class="watch-grid">${watchlistCards}</div>
       </section>
       ${firstTradeWatch}

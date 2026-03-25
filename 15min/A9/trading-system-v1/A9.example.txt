@@ -1,0 +1,16 @@
+Relayer API 密钥
+sk-xxxxxxxxxx
+
+Relayer API签名者地址
+0xREDACTED_SIGNER_ADDRESS
+
+开发者设置
+
+地址
+0xREDACTED_TRADER_ADDRESS
+
+开发者秘钥
+sk-xxxxxxxxxx
+
+私钥
+0xREDACTED_PRIVATE_KEY

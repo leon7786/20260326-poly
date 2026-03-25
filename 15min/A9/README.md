@@ -94,6 +94,12 @@ A9 的运行信息来源于 VPS 上的本地私有文件（例如 `A9.txt`），
 
 而不是把敏感信息写进 Git 仓库。
 
+仓库中如果需要演示格式，统一使用占位符：
+
+- API key → `sk-xxxxxxxxxx`
+- 私钥 → `0xREDACTED_PRIVATE_KEY`
+- 地址 → `0xREDACTED_...`
+
 ## 当前资金检查结果（简述）
 
 基于链上公开查询：
