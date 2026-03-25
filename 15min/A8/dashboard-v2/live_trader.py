@@ -179,10 +179,14 @@ class LiveTrader(PaperTraderV3):
         self.allowed_coins = {c.strip().lower() for c in self.env.get("ALLOWED_COINS", "BTC,ETH,SOL").split(",") if c.strip()}
         self.live_budget_usdc = float(self.env.get("LIVE_BUDGET_USDC", "10"))
         self.order_mode = self.env.get("ORDER_MODE", "maker").lower()
-        self.order_timeout_seconds = int(self.env.get("ORDER_TIMEOUT_SECONDS", "20"))
+        # 第一阶段给订单更充分的成交时间
+        self.order_timeout_seconds = int(self.env.get("ORDER_TIMEOUT_SECONDS", "45"))
         self.sync_interval_seconds = float(self.env.get("SYNC_INTERVAL_SECONDS", "5"))
         # Polymarket 某些市场对订单份数有最小值要求；默认按 5 shares 做预判
         self.min_order_size = float(self.env.get("MIN_ORDER_SIZE", "5"))
+        # 若长时间不成交，允许一次轻微重挂（默认打开）
+        self.reprice_on_timeout = self.env.get("REPRICE_ON_TIMEOUT", "true").lower() == "true"
+        self.max_reprice_steps = int(self.env.get("MAX_REPRICE_STEPS", "1"))
 
         self._init_clob()
         self._reconcile_startup()
@@ -454,6 +458,116 @@ class LiveTrader(PaperTraderV3):
             w["pending_order"] = False
         return changed
 
+    def _tick_to_float(self, tick_size) -> float:
+        try:
+            return float(tick_size)
+        except Exception:
+            return 0.01
+
+    def _rebuild_order_with_new_price(self, order: dict, new_price: float):
+        new_payload = {
+            "token_id": order["token_id"],
+            "buy_price": new_price,
+            "size": round(float(order.get("remaining_size") or order.get("original_size") or order.get("requested_size") or 0), 2),
+            "tick_size": order.get("tick_size") or "0.01",
+            "neg_risk": bool(order.get("neg_risk")),
+        }
+        signed = self.clob.create_order(
+            OrderArgs(
+                token_id=new_payload["token_id"],
+                price=new_payload["buy_price"],
+                size=new_payload["size"],
+                side="BUY",
+            ),
+            PartialCreateOrderOptions(
+                tick_size=new_payload["tick_size"],
+                neg_risk=new_payload["neg_risk"],
+            )
+        )
+        new_payload["signed"] = signed
+        return new_payload
+
+    def _maybe_reprice_order(self, order_id: str, order: dict) -> bool:
+        """超时后允许一次轻微重挂：上调 1 个 tick，提高成交概率。"""
+        if not self.reprice_on_timeout:
+            return False
+        if int(order.get("reprice_attempts", 0)) >= self.max_reprice_steps:
+            return False
+        if safe_float(order.get("matched_size"), 0) > 0:
+            return False
+
+        current_price = safe_float(order.get("requested_price"), 0)
+        tick = self._tick_to_float(order.get("tick_size"))
+        max_buy_price = float(self.env.get("MAX_BUY_PRICE", str(self.cfg.max_buy_price)))
+        new_price = round(current_price + tick, 6)
+        if (new_price - max_buy_price) > 1e-9:
+            return False
+
+        # 先 cancel 原单，再 post 一次新单；只针对 bot-managed 单
+        if not self._cancel_bot_order(order_id, reason="reprice_before_repost"):
+            return False
+
+        try:
+            new_payload = self._rebuild_order_with_new_price(order, new_price)
+            resp = self.clob.post_order(new_payload["signed"], orderType=OrderType.GTC)
+            new_order_id = extract_order_id(resp)
+            if not new_order_id:
+                return False
+
+            # 标记老单已被重挂逻辑接管，不再继续跟踪为 open
+            order["status"] = "cancelled"
+            order["replaced_by"] = new_order_id
+            order["last_sync_at"] = now_ts()
+
+            # 注册新单，继承原窗口与上下文
+            new_order = self._register_bot_order(
+                window_key=order["window_key"],
+                coin=order["coin"],
+                market_id=order.get("market_id"),
+                token_id=order["token_id"],
+                direction=order["direction"],
+                requested_price=new_price,
+                requested_size=new_payload["size"],
+                order_usdc=round(new_payload["size"] * new_price, 6),
+                price_source=order.get("price_source", "?"),
+                submit_response=resp,
+                order_id=new_order_id,
+            )
+            new_order["tick_size"] = order.get("tick_size")
+            new_order["neg_risk"] = bool(order.get("neg_risk"))
+            new_order["reprice_attempts"] = int(order.get("reprice_attempts", 0)) + 1
+            new_order["parent_order_id"] = order_id
+            new_order["timeout_at"] = now_ts() + self.order_timeout_seconds
+
+            w = self.windows.get(order.get("window_key"), {})
+            w["pending_order"] = True
+            w["pending_order_id"] = new_order_id
+            w["pending_order_status"] = "submitted"
+
+            self._record_event({
+                "action": "reposted",
+                "old_order_id": order_id,
+                "new_order_id": new_order_id,
+                "coin": order.get("coin"),
+                "old_price": current_price,
+                "new_price": new_price,
+                "size": new_payload["size"],
+            })
+            self._log(
+                f"🔁 LIVE repost | {order.get('coin', '').upper()} | old={order_id[:10]} new={new_order_id[:10]} "
+                f"| {current_price:.3f} -> {new_price:.3f} | size={new_payload['size']:.2f}"
+            )
+            return True
+        except Exception as e:
+            self._record_event({
+                "action": "repost_error",
+                "order_id": order_id,
+                "coin": order.get("coin"),
+                "error": str(e),
+            })
+            self._log(f"⚠️ LIVE repost 失败 | order={order_id} | {e}")
+            return False
+
     def _cancel_bot_order(self, order_id: str, reason: str) -> bool:
         order = self.bot_orders.get(order_id)
         if not order or order.get("status") in TERMINAL_ORDER_STATUSES:
@@ -488,6 +602,10 @@ class LiveTrader(PaperTraderV3):
             if order.get("status") not in OPEN_ORDER_STATUSES:
                 continue
             if now_value >= safe_float(order.get("timeout_at"), 0):
+                # 优先尝试一次轻微重挂；如果不适合再真正撤单
+                if self._maybe_reprice_order(order_id, order):
+                    cancelled += 1
+                    continue
                 if self._cancel_bot_order(order_id, reason="timeout"):
                     cancelled += 1
         return cancelled
@@ -1086,6 +1204,8 @@ def check():
     print("max_concurrent_positions=", trader.max_concurrent_positions)
     print("order_timeout_seconds=", trader.order_timeout_seconds)
     print("min_order_size=", trader.min_order_size)
+    print("reprice_on_timeout=", trader.reprice_on_timeout)
+    print("max_reprice_steps=", trader.max_reprice_steps)
     print("usdc_balance=", trader._get_usdc_balance())
     print("native_POL=", trader._get_native_pol())
     print("pending_orders=", trader._managed_pending_orders_count())
