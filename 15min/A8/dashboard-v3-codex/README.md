@@ -1,6 +1,6 @@
 ## 版本说明
 
-- `dashboard-v3` 基于 `dashboard-v2` 复制，并同步了截至 2026-03-25 的本地最新可运行版本。
+- `dashboard-v3-codex` 基于 `dashboard-v2` 复制，并同步了截至 2026-03-25 的本地最新可运行版本。
 - 当前 live execution 为 `market` / `FAK` 成交优先模式。
 - 目录结构保持 flat：脚本在根目录，systemd 文件在 `systemd/`。
 
