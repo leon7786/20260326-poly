@@ -32,6 +32,7 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
     BalanceAllowanceParams,
     AssetType,
+    MarketOrderArgs,
     OrderArgs,
     PartialCreateOrderOptions,
     OrderType,
@@ -169,6 +170,8 @@ class LiveTrader(PaperTraderV3):
     def __init__(self, config=None):
         self.env = load_env(ENV_FILE)
         cfg = config or Config(max_buy_price=float(self.env.get("MAX_BUY_PRICE", "0.30")))
+        cfg.fast_poll_interval = float(self.env.get("LIVE_FAST_POLL_INTERVAL", "0.2"))
+        cfg.slow_poll_interval = float(self.env.get("LIVE_SLOW_POLL_INTERVAL", "1.5"))
         super().__init__(config=cfg)
 
         self.live_enabled = self.env.get("LIVE_ENABLED", "false").lower() == "true"
@@ -179,6 +182,7 @@ class LiveTrader(PaperTraderV3):
         self.allowed_coins = {c.strip().lower() for c in self.env.get("ALLOWED_COINS", "BTC,ETH,SOL").split(",") if c.strip()}
         self.live_budget_usdc = float(self.env.get("LIVE_BUDGET_USDC", "10"))
         self.order_mode = self.env.get("ORDER_MODE", "maker").lower()
+        self.market_order_type = OrderType.FAK
         # 第一阶段给订单更充分的成交时间
         self.order_timeout_seconds = int(self.env.get("ORDER_TIMEOUT_SECONDS", "45"))
         self.sync_interval_seconds = float(self.env.get("SYNC_INTERVAL_SECONDS", "5"))
@@ -269,6 +273,96 @@ class LiveTrader(PaperTraderV3):
         if native_pol <= 0:
             return True, "warning: native POL is 0, continuing because CLOB auth+allowance are ready"
         return True, "ok"
+
+    def _is_immediate_execution_mode(self) -> bool:
+        return self.order_mode in {"market", "taker", "immediate"}
+
+    def _normalize_book_levels(self, levels) -> list[dict]:
+        normalized = []
+        for level in levels or []:
+            if isinstance(level, dict):
+                price = safe_float(level.get("price"), 0)
+                size = safe_float(level.get("size"), 0)
+            else:
+                price = safe_float(getattr(level, "price", 0), 0)
+                size = safe_float(getattr(level, "size", 0), 0)
+            if price > 0 and size > 0:
+                normalized.append({"price": price, "size": size})
+        return normalized
+
+    def _estimate_market_buy_cap(self, asks, target_usdc: float) -> dict | None:
+        if target_usdc <= 0:
+            return None
+
+        levels = sorted(self._normalize_book_levels(asks), key=lambda x: x["price"])
+        if not levels:
+            return None
+
+        visible_notional = sum(level["price"] * level["size"] for level in levels)
+        cum_notional = 0.0
+        cum_shares = 0.0
+        levels_used = 0
+
+        for level in levels:
+            price = level["price"]
+            size = level["size"]
+            level_notional = price * size
+            levels_used += 1
+
+            if cum_notional + level_notional >= target_usdc - 1e-9:
+                remaining_notional = max(target_usdc - cum_notional, 0.0)
+                shares_taken = (remaining_notional / price) if price > 0 else 0.0
+                cum_notional += remaining_notional
+                cum_shares += shares_taken
+                return {
+                    "cap_price": price,
+                    "estimated_shares": cum_shares,
+                    "filled_notional": cum_notional,
+                    "visible_notional": visible_notional,
+                    "levels_used": levels_used,
+                    "full_fill": True,
+                }
+
+            cum_notional += level_notional
+            cum_shares += size
+
+        return {
+            "cap_price": levels[-1]["price"],
+            "estimated_shares": cum_shares,
+            "filled_notional": cum_notional,
+            "visible_notional": visible_notional,
+            "levels_used": levels_used,
+            "full_fill": False,
+        }
+
+    def _sign_order_payload(self, payload: dict):
+        if payload.get("execution_mode") == "market":
+            return self.clob.create_market_order(
+                MarketOrderArgs(
+                    token_id=payload["token_id"],
+                    amount=payload["order_usdc"],
+                    side="BUY",
+                    price=payload["buy_price"],
+                    order_type=payload.get("market_order_type", self.market_order_type),
+                ),
+                PartialCreateOrderOptions(
+                    tick_size=payload["tick_size"],
+                    neg_risk=payload["neg_risk"],
+                )
+            )
+
+        return self.clob.create_order(
+            OrderArgs(
+                token_id=payload["token_id"],
+                price=payload["buy_price"],
+                size=payload["size"],
+                side="BUY",
+            ),
+            PartialCreateOrderOptions(
+                tick_size=payload["tick_size"],
+                neg_risk=payload["neg_risk"],
+            )
+        )
 
     def _normalize_order_status(self, raw_status: str, matched_size: float, original_size: float, in_open_list: bool = False) -> str:
         raw = (raw_status or "").upper()
@@ -495,6 +589,8 @@ class LiveTrader(PaperTraderV3):
             return False
         if safe_float(order.get("matched_size"), 0) > 0:
             return False
+        if order.get("execution_mode") == "market":
+            return False
 
         current_price = safe_float(order.get("requested_price"), 0)
         tick = self._tick_to_float(order.get("tick_size"))
@@ -704,17 +800,134 @@ class LiveTrader(PaperTraderV3):
         if order_usdc <= 0:
             return False, "no remaining live budget", None
 
-        # 先按美元预算推导原始份数
+        min_required_size = float(self.min_order_size)
+        max_buy_price = float(self.env.get("MAX_BUY_PRICE", str(self.cfg.max_buy_price)))
+        execution_mode = "market" if self._is_immediate_execution_mode() else "maker"
+
+        if execution_mode == "market":
+            depth = self._estimate_market_buy_cap(book.asks, order_usdc)
+            if not depth or not depth.get("cap_price"):
+                block_reason = "no ask liquidity for immediate execution"
+                self._record_event({
+                    "action": "skip",
+                    "coin": coin,
+                    "direction": direction,
+                    "buy_price": buy_price,
+                    "token_id": token,
+                    "reason": block_reason,
+                })
+                return False, block_reason, None
+
+            if not depth.get("full_fill"):
+                block_reason = f"insufficient ask depth for ${order_usdc:.2f} immediate fill"
+                self._record_event({
+                    "action": "skip",
+                    "coin": coin,
+                    "direction": direction,
+                    "buy_price": buy_price,
+                    "token_id": token,
+                    "reason": block_reason,
+                })
+                return False, block_reason, None
+
+            cap_price = safe_float(depth.get("cap_price"), 0)
+            if (cap_price - max_buy_price) > 1e-9:
+                block_reason = f"marketable cap too high: {cap_price:.3f} > {max_buy_price:.3f}"
+                self._record_event({
+                    "action": "skip",
+                    "coin": coin,
+                    "direction": direction,
+                    "buy_price": cap_price,
+                    "token_id": token,
+                    "reason": block_reason,
+                })
+                return False, block_reason, None
+
+            effective_order_usdc = order_usdc
+            estimated_shares = safe_float(depth.get("estimated_shares"), 0)
+            resized_for_min = False
+            if estimated_shares + 1e-9 < min_required_size:
+                needed_usdc = round(min_required_size * cap_price, 6)
+                if needed_usdc > remaining_budget + 1e-9:
+                    block_reason = (
+                        f"min size requires {min_required_size:g} shares (~${needed_usdc:.2f}), "
+                        f"but remaining budget only ${remaining_budget:.2f}"
+                    )
+                    self._record_event({
+                        "action": "skip",
+                        "coin": coin,
+                        "direction": direction,
+                        "buy_price": cap_price,
+                        "token_id": token,
+                        "reason": block_reason,
+                    })
+                    return False, block_reason, None
+
+                depth = self._estimate_market_buy_cap(book.asks, needed_usdc)
+                if not depth or not depth.get("full_fill") or not depth.get("cap_price"):
+                    block_reason = f"insufficient ask depth for min size {min_required_size:g} shares (~${needed_usdc:.2f})"
+                    self._record_event({
+                        "action": "skip",
+                        "coin": coin,
+                        "direction": direction,
+                        "buy_price": cap_price,
+                        "token_id": token,
+                        "reason": block_reason,
+                    })
+                    return False, block_reason, None
+
+                cap_price = safe_float(depth.get("cap_price"), 0)
+                if (cap_price - max_buy_price) > 1e-9:
+                    block_reason = f"min size pushes marketable cap to {cap_price:.3f} > {max_buy_price:.3f}"
+                    self._record_event({
+                        "action": "skip",
+                        "coin": coin,
+                        "direction": direction,
+                        "buy_price": cap_price,
+                        "token_id": token,
+                        "reason": block_reason,
+                    })
+                    return False, block_reason, None
+
+                effective_order_usdc = needed_usdc
+                estimated_shares = safe_float(depth.get("estimated_shares"), 0)
+                resized_for_min = True
+
+            payload = {
+                "window_key": window_key,
+                "coin": coin,
+                "market_id": market.get("conditionId"),
+                "direction": direction,
+                "buy_price": round(cap_price, 6),
+                "cap_price": round(cap_price, 6),
+                "price_source": f"{price_source}->market_cap",
+                "token_id": token,
+                "tick_size": tick_size,
+                "neg_risk": neg_risk,
+                "order_usdc": round(effective_order_usdc, 6),
+                "size": round(max(estimated_shares, 0.0), 4),
+                "raw_size": round(order_usdc / max(cap_price, 0.01), 4),
+                "min_required_size": min_required_size,
+                "resized_for_min": resized_for_min,
+                "guard_reason": reason,
+                "order_mode": self.order_mode,
+                "execution_mode": "market",
+                "market_order_type": self.market_order_type,
+                "post_order_type": self.market_order_type,
+                "levels_used": depth.get("levels_used"),
+                "visible_ask_notional": round(safe_float(depth.get("visible_notional"), 0), 6),
+                "full_depth_match": bool(depth.get("full_fill")),
+            }
+            payload["signed"] = self._sign_order_payload(payload)
+            return True, reason, payload
+
         raw_size = order_usdc / max(buy_price, 0.01)
         size = round(max(raw_size, 1.0), 2)
 
-        # 预判最小份数限制：如果 raw size < min_order_size，尝试提升到最小份数
-        min_required_size = float(self.min_order_size)
         effective_order_usdc = order_usdc
         resized_for_min = False
         if size + 1e-9 < min_required_size:
             needed_usdc = round(min_required_size * buy_price, 6)
-            # 只要不超过总预算，就允许为了满足最小份数而提高这笔的名义金额
             if needed_usdc <= remaining_budget + 1e-9:
                 size = round(min_required_size, 2)
                 effective_order_usdc = needed_usdc
@@ -734,19 +947,6 @@ class LiveTrader(PaperTraderV3):
                 })
                 return False, block_reason, None
 
-        signed = self.clob.create_order(
-            OrderArgs(
-                token_id=token,
-                price=buy_price,
-                size=size,
-                side="BUY",
-            ),
-            PartialCreateOrderOptions(
-                tick_size=tick_size,
-                neg_risk=neg_risk,
-            )
-        )
-
         payload = {
             "window_key": window_key,
             "coin": coin,
@@ -764,24 +964,14 @@ class LiveTrader(PaperTraderV3):
             "resized_for_min": resized_for_min,
             "guard_reason": reason,
             "order_mode": self.order_mode,
-            "signed": signed,
+            "execution_mode": "maker",
+            "post_order_type": OrderType.GTC,
         }
+        payload["signed"] = self._sign_order_payload(payload)
         return True, reason, payload
 
     def _try_build_signed_order(self, payload: dict):
-        signed = self.clob.create_order(
-            OrderArgs(
-                token_id=payload["token_id"],
-                price=payload["buy_price"],
-                size=payload["size"],
-                side="BUY",
-            ),
-            PartialCreateOrderOptions(
-                tick_size=payload["tick_size"],
-                neg_risk=payload["neg_risk"],
-            )
-        )
-        payload["signed"] = signed
+        payload["signed"] = self._sign_order_payload(payload)
         return payload
 
     def _maybe_retry_min_size(self, payload: dict, error_text: str):
@@ -805,9 +995,31 @@ class LiveTrader(PaperTraderV3):
             return False, reason, None
 
         retry_payload = deepcopy(payload)
-        retry_payload["size"] = round(api_min_size, 2)
         retry_payload["order_usdc"] = needed_usdc
         retry_payload["retry_min_size"] = api_min_size
+
+        if retry_payload.get("execution_mode") == "market":
+            book = self.clob.get_order_book(retry_payload["token_id"])
+            depth = self._estimate_market_buy_cap(book.asks, needed_usdc)
+            if not depth or not depth.get("full_fill") or not depth.get("cap_price"):
+                reason = f"api minimum size={api_min_size:g} needs deeper immediate-fill liquidity (~${needed_usdc:.2f})"
+                return False, reason, None
+
+            max_buy_price = float(self.env.get("MAX_BUY_PRICE", str(self.cfg.max_buy_price)))
+            cap_price = safe_float(depth.get("cap_price"), 0)
+            if (cap_price - max_buy_price) > 1e-9:
+                reason = f"api minimum size pushes marketable cap to {cap_price:.3f} > {max_buy_price:.3f}"
+                return False, reason, None
+
+            retry_payload["buy_price"] = round(cap_price, 6)
+            retry_payload["cap_price"] = round(cap_price, 6)
+            retry_payload["size"] = round(max(safe_float(depth.get("estimated_shares"), 0), 0.0), 4)
+            retry_payload["levels_used"] = depth.get("levels_used")
+            retry_payload["visible_ask_notional"] = round(safe_float(depth.get("visible_notional"), 0), 6)
+            retry_payload["full_depth_match"] = bool(depth.get("full_fill"))
+        else:
+            retry_payload["size"] = round(api_min_size, 2)
+
         retry_payload = self._try_build_signed_order(retry_payload)
         return True, "retry_with_min_size", retry_payload
 
@@ -836,34 +1048,49 @@ class LiveTrader(PaperTraderV3):
             final_log["action"] = "posted"
             final_log["response"] = resp
             final_log["order_id"] = order_id
-            self._register_bot_order(
+            registered = self._register_bot_order(
                 window_key=window_key,
                 coin=coin,
                 market_id=final_payload.get("market_id"),
                 token_id=final_payload["token_id"],
                 direction=direction,
-                requested_price=buy_price,
+                requested_price=final_payload.get("buy_price", buy_price),
                 requested_size=final_payload["size"],
                 order_usdc=final_payload["order_usdc"],
-                price_source=price_source,
+                price_source=final_payload.get("price_source", price_source),
                 submit_response=resp,
                 order_id=order_id,
             )
+            if registered is not None:
+                registered["tick_size"] = final_payload.get("tick_size")
+                registered["neg_risk"] = bool(final_payload.get("neg_risk"))
+                registered["order_mode"] = final_payload.get("order_mode", self.order_mode)
+                registered["execution_mode"] = final_payload.get("execution_mode", "maker")
+                registered["post_order_type"] = final_payload.get("post_order_type")
+                if final_payload.get("execution_mode") == "market":
+                    registered["cap_price"] = final_payload.get("cap_price", final_payload.get("buy_price"))
+                    registered["requested_notional"] = final_payload.get("order_usdc")
+                    registered["estimated_shares"] = final_payload.get("size")
+                    registered["cost_basis_source"] = "marketable_cap_price_estimate"
+
             self._record_event(final_log)
             self._save_state()
             if not order_id:
                 return False, "missing order id in response", final_log
             return True, "submitted", final_log
 
+        post_order_type = payload.get("post_order_type", OrderType.GTC)
+
         try:
-            resp = self.clob.post_order(payload["signed"], orderType=OrderType.GTC)
+            resp = self.clob.post_order(payload["signed"], orderType=post_order_type)
             return _finalize_success(payload, resp)
         except Exception as e:
             error_text = str(e)
             retried, retry_reason, retry_payload = self._maybe_retry_min_size(payload, error_text)
             if retried and retry_payload is not None:
                 try:
-                    retry_resp = self.clob.post_order(retry_payload["signed"], orderType=OrderType.GTC)
+                    retry_post_order_type = retry_payload.get("post_order_type", OrderType.GTC)
+                    retry_resp = self.clob.post_order(retry_payload["signed"], orderType=retry_post_order_type)
                     return _finalize_success(retry_payload, retry_resp)
                 except Exception as e2:
                     payload_to_log["action"] = "submit_error"
@@ -1089,11 +1316,14 @@ class LiveTrader(PaperTraderV3):
         bl = book_info.get("bid_levels", 0)
         al = book_info.get("ask_levels", 0)
         icon = "🚀" if self.live_enabled and not self.dry_run else "🧪"
+        effective_buy_price = payload.get("buy_price", buy_price) if payload else buy_price
+        effective_price_source = payload.get("price_source", price_source) if payload else price_source
+        execution_mode = payload.get("execution_mode", self.order_mode) if payload else self.order_mode
         if ok:
             self._log(
                 f"{icon} LIVE signal {coin.upper()} {direction} | prob={win_prob:.0%} mom={momentum:+.3f}% "
-                f"| ${buy_price:.2f}({price_source},{bl}b/{al}a) | {consensus['agree']}/{consensus['total']}源 "
-                f"| RSI={rsi:.0f} | {secs_left:.0f}s | {reason} | action={payload.get('action') if payload else '?'}"
+                f"| ${effective_buy_price:.2f}({effective_price_source},{bl}b/{al}a) | {consensus['agree']}/{consensus['total']}源 "
+                f"| RSI={rsi:.0f} | {secs_left:.0f}s | {reason} | mode={execution_mode} | action={payload.get('action') if payload else '?'}"
             )
         else:
             self._log(f"⏭ LIVE {coin.upper()} {direction} | blocked: {reason}")
@@ -1121,6 +1351,7 @@ class LiveTrader(PaperTraderV3):
         print(f"  单笔上限: ${self.max_order_usdc:.2f} | 总预算: ${self.live_budget_usdc:.2f}", flush=True)
         print(f"  最大并发持仓: {self.max_concurrent_positions}", flush=True)
         print(f"  最大买入价: ${self.cfg.max_buy_price:.2f} | 日亏损上限: ${self.max_daily_loss_usdc:.2f}", flush=True)
+        print(f"  Order Mode: {self.order_mode} | Poll: {self.cfg.fast_poll_interval}s/{self.cfg.slow_poll_interval}s", flush=True)
         print(f"  Order Timeout: {self.order_timeout_seconds}s | Sync: {self.sync_interval_seconds}s", flush=True)
         print(f"  Live Event Log: {LIVE_EVENT_LOG}", flush=True)
         print(f"  Live Trade Log: {LIVE_TRADE_LOG}", flush=True)
@@ -1202,6 +1433,8 @@ def check():
     print("allowed_coins=", sorted(trader.allowed_coins))
     print("max_order_usdc=", trader.max_order_usdc)
     print("max_concurrent_positions=", trader.max_concurrent_positions)
+    print("order_mode=", trader.order_mode)
+    print("poll_intervals=", trader.cfg.fast_poll_interval, trader.cfg.slow_poll_interval)
     print("order_timeout_seconds=", trader.order_timeout_seconds)
     print("min_order_size=", trader.min_order_size)
     print("reprice_on_timeout=", trader.reprice_on_timeout)
