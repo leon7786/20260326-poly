@@ -1,0 +1,15 @@
+[Unit]
+Description=Polymarket 15min Round Logger
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/polymarket-arb/src
+ExecStart=/usr/bin/python3 -u round_logger.py
+StandardOutput=append:/root/projects/polymarket-arb/output/round_logger.log
+StandardError=append:/root/projects/polymarket-arb/output/round_logger.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
