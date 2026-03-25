@@ -246,7 +246,8 @@ class LiveTrader(PaperTraderV3):
             return False, f"max concurrent slots reached: {self.max_concurrent_positions}"
         if self.daily_pnl <= -abs(self.max_daily_loss_usdc):
             return False, f"daily loss limit hit: {self.daily_pnl}"
-        if buy_price > float(self.env.get("MAX_BUY_PRICE", "0.30")):
+        max_buy_price = float(self.env.get("MAX_BUY_PRICE", "0.30"))
+        if (buy_price - max_buy_price) > 1e-9:
             return False, f"buy price too high: {buy_price}"
 
         order_usdc = min(self.max_order_usdc, self.live_budget_usdc)
@@ -831,7 +832,7 @@ class LiveTrader(PaperTraderV3):
                 self._log(f"⏭ LIVE {coin.upper()} {direction} | prob={win_prob:.0%} mom={momentum:+.3f}% | 无盘口")
             self.total_skips += 1
             return
-        if buy_price is not None and buy_price > self.cfg.max_buy_price:
+        if buy_price is not None and (buy_price - self.cfg.max_buy_price) > 1e-9:
             sk = f"{window_key}-{coin}-expensive"
             if sk not in self._logged_skips:
                 self._logged_skips.add(sk)
