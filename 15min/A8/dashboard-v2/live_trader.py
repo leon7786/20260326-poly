@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -180,6 +181,8 @@ class LiveTrader(PaperTraderV3):
         self.order_mode = self.env.get("ORDER_MODE", "maker").lower()
         self.order_timeout_seconds = int(self.env.get("ORDER_TIMEOUT_SECONDS", "20"))
         self.sync_interval_seconds = float(self.env.get("SYNC_INTERVAL_SECONDS", "5"))
+        # Polymarket 某些市场对订单份数有最小值要求；默认按 5 shares 做预判
+        self.min_order_size = float(self.env.get("MIN_ORDER_SIZE", "5"))
 
         self._init_clob()
         self._reconcile_startup()
@@ -577,9 +580,41 @@ class LiveTrader(PaperTraderV3):
         book = self.clob.get_order_book(token)
         tick_size = book.tick_size or "0.01"
         neg_risk = bool(book.neg_risk)
-        order_usdc = min(self.max_order_usdc, self.live_budget_usdc - self._reserved_budget())
-        size = max(order_usdc / max(buy_price, 0.01), 1.0)
-        size = round(size, 2)
+
+        remaining_budget = max(self.live_budget_usdc - self._reserved_budget(), 0.0)
+        order_usdc = min(self.max_order_usdc, remaining_budget)
+        if order_usdc <= 0:
+            return False, "no remaining live budget", None
+
+        # 先按美元预算推导原始份数
+        raw_size = order_usdc / max(buy_price, 0.01)
+        size = round(max(raw_size, 1.0), 2)
+
+        # 预判最小份数限制：如果 raw size < min_order_size，尝试提升到最小份数
+        min_required_size = float(self.min_order_size)
+        effective_order_usdc = order_usdc
+        resized_for_min = False
+        if size + 1e-9 < min_required_size:
+            needed_usdc = round(min_required_size * buy_price, 6)
+            # 只要不超过总预算，就允许为了满足最小份数而提高这笔的名义金额
+            if needed_usdc <= remaining_budget + 1e-9:
+                size = round(min_required_size, 2)
+                effective_order_usdc = needed_usdc
+                resized_for_min = True
+            else:
+                block_reason = (
+                    f"min size requires {min_required_size:g} shares (~${needed_usdc:.2f}), "
+                    f"but remaining budget only ${remaining_budget:.2f}"
+                )
+                self._record_event({
+                    "action": "skip",
+                    "coin": coin,
+                    "direction": direction,
+                    "buy_price": buy_price,
+                    "token_id": token,
+                    "reason": block_reason,
+                })
+                return False, block_reason, None
 
         signed = self.clob.create_order(
             OrderArgs(
@@ -604,13 +639,59 @@ class LiveTrader(PaperTraderV3):
             "token_id": token,
             "tick_size": tick_size,
             "neg_risk": neg_risk,
-            "order_usdc": order_usdc,
+            "order_usdc": effective_order_usdc,
             "size": size,
+            "raw_size": round(raw_size, 4),
+            "min_required_size": min_required_size,
+            "resized_for_min": resized_for_min,
             "guard_reason": reason,
             "order_mode": self.order_mode,
             "signed": signed,
         }
         return True, reason, payload
+
+    def _try_build_signed_order(self, payload: dict):
+        signed = self.clob.create_order(
+            OrderArgs(
+                token_id=payload["token_id"],
+                price=payload["buy_price"],
+                size=payload["size"],
+                side="BUY",
+            ),
+            PartialCreateOrderOptions(
+                tick_size=payload["tick_size"],
+                neg_risk=payload["neg_risk"],
+            )
+        )
+        payload["signed"] = signed
+        return payload
+
+    def _maybe_retry_min_size(self, payload: dict, error_text: str):
+        """若后端返回 minimum size 错误，尝试按返回的最小份数重建一次订单。"""
+        m = re.search(r"minimum:\s*([0-9]+(?:\.[0-9]+)?)", error_text or "", re.I)
+        if not m:
+            return False, f"submit error: {error_text}", None
+
+        api_min_size = float(m.group(1))
+        current_size = safe_float(payload.get("size"), 0)
+        if current_size + 1e-9 >= api_min_size:
+            return False, f"submit error: {error_text}", None
+
+        needed_usdc = round(api_min_size * safe_float(payload.get('buy_price'), 0), 6)
+        remaining_budget = max(self.live_budget_usdc - self._reserved_budget(), 0.0)
+        if needed_usdc > remaining_budget + 1e-9:
+            reason = (
+                f"api minimum size={api_min_size:g} requires ~${needed_usdc:.2f}, "
+                f"but remaining budget only ${remaining_budget:.2f}"
+            )
+            return False, reason, None
+
+        retry_payload = deepcopy(payload)
+        retry_payload["size"] = round(api_min_size, 2)
+        retry_payload["order_usdc"] = needed_usdc
+        retry_payload["retry_min_size"] = api_min_size
+        retry_payload = self._try_build_signed_order(retry_payload)
+        return True, "retry_with_min_size", retry_payload
 
     def _submit_live_order(self, *, window_key: str, coin: str, market: dict, direction: str, buy_price: float, price_source: str):
         ok, reason, payload = self._build_order_payload(
@@ -631,37 +712,52 @@ class LiveTrader(PaperTraderV3):
             self._record_event(payload_to_log)
             return True, "dry_run_signed", payload_to_log
 
-        try:
-            resp = self.clob.post_order(payload["signed"], orderType=OrderType.GTC)
+        def _finalize_success(final_payload: dict, resp: dict):
+            final_log = {k: v for k, v in final_payload.items() if k != "signed"}
             order_id = extract_order_id(resp)
-            payload_to_log["action"] = "posted"
-            payload_to_log["response"] = resp
-            payload_to_log["order_id"] = order_id
-
-            order = self._register_bot_order(
+            final_log["action"] = "posted"
+            final_log["response"] = resp
+            final_log["order_id"] = order_id
+            self._register_bot_order(
                 window_key=window_key,
                 coin=coin,
-                market_id=payload.get("market_id"),
-                token_id=payload["token_id"],
+                market_id=final_payload.get("market_id"),
+                token_id=final_payload["token_id"],
                 direction=direction,
                 requested_price=buy_price,
-                requested_size=payload["size"],
-                order_usdc=payload["order_usdc"],
+                requested_size=final_payload["size"],
+                order_usdc=final_payload["order_usdc"],
                 price_source=price_source,
                 submit_response=resp,
                 order_id=order_id,
             )
-
-            self._record_event(payload_to_log)
+            self._record_event(final_log)
             self._save_state()
             if not order_id:
-                return False, "missing order id in response", payload_to_log
-            return True, "submitted", payload_to_log
+                return False, "missing order id in response", final_log
+            return True, "submitted", final_log
+
+        try:
+            resp = self.clob.post_order(payload["signed"], orderType=OrderType.GTC)
+            return _finalize_success(payload, resp)
         except Exception as e:
+            error_text = str(e)
+            retried, retry_reason, retry_payload = self._maybe_retry_min_size(payload, error_text)
+            if retried and retry_payload is not None:
+                try:
+                    retry_resp = self.clob.post_order(retry_payload["signed"], orderType=OrderType.GTC)
+                    return _finalize_success(retry_payload, retry_resp)
+                except Exception as e2:
+                    payload_to_log["action"] = "submit_error"
+                    payload_to_log["error"] = str(e2)
+                    payload_to_log["retry_reason"] = retry_reason
+                    self._record_event(payload_to_log)
+                    return False, f"submit error after retry: {e2}", payload_to_log
+
             payload_to_log["action"] = "submit_error"
-            payload_to_log["error"] = str(e)
+            payload_to_log["error"] = error_text
             self._record_event(payload_to_log)
-            return False, f"submit error: {e}", payload_to_log
+            return False, retry_reason if retried is False and retry_payload is None and retry_reason else f"submit error: {e}", payload_to_log
 
     def _settle_all_due(self):
         now_value = now_ts()
@@ -989,6 +1085,7 @@ def check():
     print("max_order_usdc=", trader.max_order_usdc)
     print("max_concurrent_positions=", trader.max_concurrent_positions)
     print("order_timeout_seconds=", trader.order_timeout_seconds)
+    print("min_order_size=", trader.min_order_size)
     print("usdc_balance=", trader._get_usdc_balance())
     print("native_POL=", trader._get_native_pol())
     print("pending_orders=", trader._managed_pending_orders_count())
